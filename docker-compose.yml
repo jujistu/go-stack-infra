@@ -45,9 +45,7 @@ services:
       - go-chat-network
 
   backend:
-    build:
-      context: ../go-chat-main
-    image: go-chat-backend:phase3
+    image: ${BACKEND_IMAGE}
     container_name: go-chat-backend
     restart: unless-stopped
     environment:
@@ -95,9 +93,7 @@ services:
       - go-chat-network
 
   stockbot:
-    build:
-      context: ../go-stockbot-rabbitmq-develop
-    image: go-stockbot:phase3
+    image: ${STOCKBOT_IMAGE}
     container_name: go-stockbot
     restart: unless-stopped
     environment:
@@ -128,9 +124,7 @@ services:
       - go-chat-network
 
   frontend:
-    build:
-      context: ../go-chat-react-main
-    image: go-chat-frontend:phase3
+    image: ${FRONTEND_IMAGE}
     container_name: go-chat-frontend
     restart: unless-stopped
 
