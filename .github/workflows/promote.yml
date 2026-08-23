@@ -19,6 +19,7 @@ on:
 permissions:
   contents: write
   packages: read
+  actions: write
 
 jobs:
   promote:
@@ -119,8 +120,17 @@ jobs:
           git push
 
           echo "Promotion committed successfully."
+
+      - name: Trigger stack integration validation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
           echo "Triggering stack integration validation..."
 
           gh workflow run stack.yml \
             --repo "${GITHUB_REPOSITORY}" \
             --ref master
+
+          echo "Stack integration workflow dispatched successfully."
