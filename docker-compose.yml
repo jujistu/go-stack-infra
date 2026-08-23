@@ -122,6 +122,13 @@ services:
     cap_drop:
       - ALL
 
+    read_only: true
+
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /run:rw,noexec,nosuid,size=4m
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m,uid=100,gid=102
+
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/"]
       interval: 10s
