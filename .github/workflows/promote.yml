@@ -99,6 +99,7 @@ jobs:
           BACKEND_SHA: ${{ inputs.backend_sha }}
           FRONTEND_SHA: ${{ inputs.frontend_sha }}
           STOCKBOT_SHA: ${{ inputs.stockbot_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -116,3 +117,10 @@ jobs:
             "promote: backend ${BACKEND_SHA:0:7}, frontend ${FRONTEND_SHA:0:7}, stockbot ${STOCKBOT_SHA:0:7}"
 
           git push
+
+          echo "Promotion committed successfully."
+          echo "Triggering stack integration validation..."
+
+          gh workflow run stack.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref master
