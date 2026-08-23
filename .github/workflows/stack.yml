@@ -8,53 +8,98 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   stack:
     name: Compose Stack Validation
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     defaults:
       run:
         working-directory: go-chat-stack
 
     steps:
+      # ----------------------------------------------------
+      # CHECKOUT INFRASTRUCTURE
+      # ----------------------------------------------------
       - name: Checkout infrastructure
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           path: go-chat-stack
 
-      - name: Checkout backend
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      # ----------------------------------------------------
+      # LOGIN TO GHCR
+      # ----------------------------------------------------
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
         with:
-          repository: jujistu/go-backend-ci-cd
-          path: go-chat-main
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Checkout frontend
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          repository: jujistu/frontend-ci-cd
-          path: go-chat-react-main
+      # ----------------------------------------------------
+      # LOAD IMAGE MANIFEST
+      # ----------------------------------------------------
+      - name: Load promoted images
+        run: |
+          set -euo pipefail
 
-      - name: Checkout stockbot
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          repository: jujistu/stock-bot
-          path: go-stockbot-rabbitmq-develop
+          test -s images.env
 
+          cat images.env
+
+          set -a
+          source images.env
+          set +a
+
+          test -n "${BACKEND_IMAGE}"
+          test -n "${FRONTEND_IMAGE}"
+          test -n "${STOCKBOT_IMAGE}"
+
+          echo "Backend:  ${BACKEND_IMAGE}"
+          echo "Frontend: ${FRONTEND_IMAGE}"
+          echo "Stockbot: ${STOCKBOT_IMAGE}"
+
+      # ----------------------------------------------------
+      # VALIDATE COMPOSE CONFIGURATION
+      # ----------------------------------------------------
       - name: Validate Compose configuration
-        run: docker compose config
+        run: |
+          set -a
+          source images.env
+          set +a
 
-      - name: Build stack
-        env:
-          STOCK_API_KEY: ${{ secrets.STOCK_API_KEY }}
-        run: docker compose build
+          docker compose config
 
+      # ----------------------------------------------------
+      # PULL EXACT VALIDATED IMAGES
+      # ----------------------------------------------------
+      - name: Pull application images
+        run: |
+          set -euo pipefail
+
+          set -a
+          source images.env
+          set +a
+
+          docker compose pull
+
+      # ----------------------------------------------------
+      # START STACK
+      # ----------------------------------------------------
       - name: Start stack
         env:
           STOCK_API_KEY: ${{ secrets.STOCK_API_KEY }}
-        run: docker compose up -d
+        run: |
+          set -euo pipefail
 
+          docker compose up -d
+
+      # ----------------------------------------------------
+      # WAIT FOR SERVICES
+      # ----------------------------------------------------
       - name: Wait for services
         run: |
           set -euo pipefail
@@ -74,13 +119,27 @@ jobs:
 
           echo "All stack services are ready."
 
+      # ----------------------------------------------------
+      # SHOW STACK STATUS
+      # ----------------------------------------------------
       - name: Show stack status
         run: docker compose ps
 
+      # ----------------------------------------------------
+      # FRONTEND SMOKE TEST
+      # ----------------------------------------------------
       - name: Check frontend
         run: |
-          curl --fail --retry 10 --retry-delay 3 http://localhost:8080/
+          set -euo pipefail
 
+          curl --fail \
+            --retry 10 \
+            --retry-delay 3 \
+            http://localhost:8080/
+
+      # ----------------------------------------------------
+      # AUTHENTICATION SMOKE TEST
+      # ----------------------------------------------------
       - name: Smoke test authentication
         run: |
           set -euo pipefail
@@ -119,6 +178,9 @@ jobs:
 
           echo "Authentication smoke test passed."
 
+      # ----------------------------------------------------
+      # BACKEND SMOKE TEST
+      # ----------------------------------------------------
       - name: Smoke test backend
         run: |
           set -euo pipefail
@@ -133,6 +195,9 @@ jobs:
 
           echo "Backend smoke test passed."
 
+      # ----------------------------------------------------
+      # STOCKBOT / RABBITMQ SMOKE TEST
+      # ----------------------------------------------------
       - name: Smoke test Stockbot
         run: |
           set -euo pipefail
@@ -146,24 +211,40 @@ jobs:
 
           echo "Stockbot RabbitMQ smoke test passed."
 
+      # ----------------------------------------------------
+      # VERIFY CONTAINER SECURITY
+      # ----------------------------------------------------
       - name: Verify container security
         run: |
-          for container in go-chat-backend go-chat-frontend go-stockbot; do
-            echo "=== $container ==="
+          set -euo pipefail
 
-            docker inspect "$container" \
+          for container in go-chat-backend go-chat-frontend go-stockbot; do
+            echo "=== ${container} ==="
+
+            docker inspect "${container}" \
               --format 'User={{.Config.User}} Readonly={{.HostConfig.ReadonlyRootfs}} CapDrop={{json .HostConfig.CapDrop}}'
 
-            test "$(docker inspect "$container" --format '{{.Config.User}}')" = "appuser"
-            test "$(docker inspect "$container" --format '{{.HostConfig.ReadonlyRootfs}}')" = "true"
-            docker inspect "$container" \
-              --format '{{json .HostConfig.CapDrop}}' | grep -q 'ALL'
+            test "$(docker inspect "${container}" \
+              --format '{{.Config.User}}')" = "appuser"
+
+            test "$(docker inspect "${container}" \
+              --format '{{.HostConfig.ReadonlyRootfs}}')" = "true"
+
+            docker inspect "${container}" \
+              --format '{{json .HostConfig.CapDrop}}' \
+              | grep -q 'ALL'
           done
 
+      # ----------------------------------------------------
+      # COLLECT LOGS ON FAILURE
+      # ----------------------------------------------------
       - name: Collect logs on failure
         if: failure()
         run: docker compose logs --no-color
 
+      # ----------------------------------------------------
+      # SHUTDOWN
+      # ----------------------------------------------------
       - name: Shutdown
         if: always()
         run: docker compose down -v

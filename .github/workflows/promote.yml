@@ -1,0 +1,118 @@
+name: Promote Application Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_sha:
+        description: "Backend image SHA"
+        required: true
+        type: string
+      frontend_sha:
+        description: "Frontend image SHA"
+        required: true
+        type: string
+      stockbot_sha:
+        description: "Stockbot image SHA"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  promote:
+    name: Promote Images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Validate image references
+        env:
+          BACKEND_SHA: ${{ inputs.backend_sha }}
+          FRONTEND_SHA: ${{ inputs.frontend_sha }}
+          STOCKBOT_SHA: ${{ inputs.stockbot_sha }}
+        run: |
+          set -euo pipefail
+
+          for value in \
+            "$BACKEND_SHA" \
+            "$FRONTEND_SHA" \
+            "$STOCKBOT_SHA"
+          do
+            if ! printf '%s' "$value" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "Invalid image SHA: $value"
+              exit 1
+            fi
+          done
+
+      # ----------------------------------------------------
+      # LOGIN TO GHCR
+      # ----------------------------------------------------
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify images exist in GHCR
+        env:
+          BACKEND_SHA: ${{ inputs.backend_sha }}
+          FRONTEND_SHA: ${{ inputs.frontend_sha }}
+          STOCKBOT_SHA: ${{ inputs.stockbot_sha }}
+        run: |
+          set -euo pipefail
+
+          docker manifest inspect \
+            "ghcr.io/jujistu/gochatapp:${BACKEND_SHA}" >/dev/null
+
+          docker manifest inspect \
+            "ghcr.io/jujistu/go-chat-frontend:${FRONTEND_SHA}" >/dev/null
+
+          docker manifest inspect \
+            "ghcr.io/jujistu/go-stockbot:${STOCKBOT_SHA}" >/dev/null
+
+          echo "All promoted images exist in GHCR."
+
+      - name: Update promotion manifest
+        env:
+          BACKEND_SHA: ${{ inputs.backend_sha }}
+          FRONTEND_SHA: ${{ inputs.frontend_sha }}
+          STOCKBOT_SHA: ${{ inputs.stockbot_sha }}
+        run: |
+          set -euo pipefail
+
+          cat > images.env <<EOF2
+          BACKEND_IMAGE=ghcr.io/jujistu/gochatapp:${BACKEND_SHA}
+          FRONTEND_IMAGE=ghcr.io/jujistu/go-chat-frontend:${FRONTEND_SHA}
+          STOCKBOT_IMAGE=ghcr.io/jujistu/go-stockbot:${STOCKBOT_SHA}
+          EOF2
+
+          echo "=== Promotion manifest ==="
+          cat images.env
+
+      - name: Commit promotion
+        env:
+          BACKEND_SHA: ${{ inputs.backend_sha }}
+          FRONTEND_SHA: ${{ inputs.frontend_sha }}
+          STOCKBOT_SHA: ${{ inputs.stockbot_sha }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add images.env
+
+          if git diff --cached --quiet; then
+            echo "No promotion changes."
+            exit 0
+          fi
+
+          git commit -m \
+            "promote: backend ${BACKEND_SHA:0:7}, frontend ${FRONTEND_SHA:0:7}, stockbot ${STOCKBOT_SHA:0:7}"
+
+          git push
