@@ -57,12 +57,22 @@ jobs:
 
       - name: Wait for services
         run: |
+          set -euo pipefail
+
           timeout 120 bash -c '
-            until docker inspect --format="{{.State.Health.Status}}" go-chat-frontend 2>/dev/null | grep -q "^healthy$"; do
+            until \
+              docker inspect --format="{{.State.Health.Status}}" go-chat-mysql 2>/dev/null | grep -q "^healthy$" &&
+              docker inspect --format="{{.State.Health.Status}}" go-chat-rabbitmq 2>/dev/null | grep -q "^healthy$" &&
+              docker inspect --format="{{.State.Health.Status}}" go-chat-frontend 2>/dev/null | grep -q "^healthy$" &&
+              docker inspect --format="{{.State.Running}}" go-chat-backend 2>/dev/null | grep -q "^true$" &&
+              docker inspect --format="{{.State.Running}}" go-stockbot 2>/dev/null | grep -q "^true$"
+            do
               docker compose ps
               sleep 3
             done
           '
+
+          echo "All stack services are ready."
 
       - name: Show stack status
         run: docker compose ps
@@ -71,20 +81,70 @@ jobs:
         run: |
           curl --fail --retry 10 --retry-delay 3 http://localhost:8080/
 
-      - name: Check authentication
+      - name: Smoke test authentication
         run: |
-          response="$(curl --fail-with-body \
+          set -euo pipefail
+
+          EMAIL="ci-test-${GITHUB_RUN_ID}@example.com"
+          PASSWORD="CiTest123!"
+
+          echo "=== Signup ==="
+
+          signup_response="$(curl --fail-with-body \
             -X POST http://localhost:8080/v1/api/auth/signup \
             -H 'Content-Type: application/json' \
-            -d '{
-              "user_name": "ci-test",
-              "email": "ci-test@example.com",
-              "password": "CiTest123!"
-            }')"
+            -d "{
+              \"user_name\": \"ci-test-${GITHUB_RUN_ID}\",
+              \"email\": \"${EMAIL}\",
+              \"password\": \"${PASSWORD}\"
+            }")"
 
-          echo "$response"
+          echo "$signup_response"
 
-          echo "$response" | grep -q '"Token"'
+          echo "$signup_response" | grep -q '"Token"'
+
+          echo "=== Login ==="
+
+          login_response="$(curl --fail-with-body \
+            -X POST http://localhost:8080/v1/api/auth/login \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"email\": \"${EMAIL}\",
+              \"password\": \"${PASSWORD}\"
+            }")"
+
+          echo "$login_response"
+
+          echo "$login_response" | grep -q '"Token"'
+
+          echo "Authentication smoke test passed."
+
+      - name: Smoke test backend
+        run: |
+          set -euo pipefail
+
+          echo "Checking backend container..."
+
+          docker inspect go-chat-backend \
+            --format 'Running={{.State.Running}}'
+
+          test "$(docker inspect go-chat-backend \
+            --format '{{.State.Running}}')" = "true"
+
+          echo "Backend smoke test passed."
+
+      - name: Smoke test Stockbot
+        run: |
+          set -euo pipefail
+
+          echo "=== Stockbot logs ==="
+
+          docker compose logs stockbot
+
+          docker compose logs stockbot 2>&1 \
+            | grep -q "Waiting for messages"
+
+          echo "Stockbot RabbitMQ smoke test passed."
 
       - name: Verify container security
         run: |
