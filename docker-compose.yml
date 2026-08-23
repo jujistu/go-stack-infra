@@ -76,6 +76,9 @@ services:
       STKBT_RECEIVER_QUEUE: stockbot-publisher
       STKBT_PUBLISHER_QUEUE: stockbot-receiver
 
+    cap_drop:
+      - ALL
+
     depends_on:
       mysql:
         condition: service_healthy
