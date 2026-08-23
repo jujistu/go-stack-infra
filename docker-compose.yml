@@ -1,0 +1,141 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: go-chat-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: gochat
+      MYSQL_USER: gochat
+      MYSQL_PASSWORD: gochatpassword
+      MYSQL_ROOT_PASSWORD: rootpassword
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-uroot",
+          "-prootpassword",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - go-chat-network
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: go-chat-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - go-chat-network
+
+  backend:
+    build:
+      context: ../go-chat-main
+    image: go-chat-backend:phase3
+    container_name: go-chat-backend
+    restart: unless-stopped
+    environment:
+      PORT: 9010
+
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: gochat
+      DB_USERNAME: gochat
+      DB_PASSWORD: gochatpassword
+      DB_PROTOCOL: tcp
+
+      JWT_SECRET: phase3-test-secret
+      JWT_TTL: 2
+
+      LOG_TO_FILE: "false"
+      LOG_PANIC_TRACE: "false"
+      CORS_DEBUG: "false"
+
+      RMQ_USERNAME: guest
+      RMQ_PASSWORD: guest
+      RMQ_HOST: rabbitmq
+      RMQ_PORT: 5672
+
+      STKBT_RECEIVER_QUEUE: stockbot-publisher
+      STKBT_PUBLISHER_QUEUE: stockbot-receiver
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+    networks:
+      - go-chat-network
+
+  stockbot:
+    build:
+      context: ../go-stockbot-rabbitmq-develop
+    image: go-stockbot:phase3
+    container_name: go-stockbot
+    restart: unless-stopped
+    environment:
+      RMQ_USERNAME: guest
+      RMQ_PASSWORD: guest
+      RMQ_HOST: rabbitmq
+      RMQ_PORT: 5672
+
+      STKBT_RECEIVER_QUEUE: stockbot-receiver
+      STKBT_PUBLISHER_QUEUE: stockbot-publisher
+
+      STOCK_API_KEY: ${STOCK_API_KEY}
+
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+    networks:
+      - go-chat-network
+
+  frontend:
+    build:
+      context: ../go-chat-react-main
+    image: go-chat-frontend:phase3
+    container_name: go-chat-frontend
+    restart: unless-stopped
+
+    depends_on:
+      - backend
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    ports:
+      - "8080:8080"
+
+    networks:
+      - go-chat-network
+
+networks:
+  go-chat-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  rabbitmq_data:
