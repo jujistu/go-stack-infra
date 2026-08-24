@@ -2,39 +2,122 @@ name: Promote Application Images
 
 on:
   workflow_dispatch:
-    inputs:
-      backend_sha:
-        description: "Backend image SHA"
-        required: true
-        type: string
-      frontend_sha:
-        description: "Frontend image SHA"
-        required: true
-        type: string
-      stockbot_sha:
-        description: "Stockbot image SHA"
-        required: true
-        type: string
 
 permissions:
   contents: write
   packages: read
-  actions: write
+  actions: read
 
 jobs:
   promote:
-    name: Promote Images
+    name: Promote Latest Validated Images
     runs-on: ubuntu-latest
 
     steps:
+      # ----------------------------------------------------
+      # CHECKOUT INFRASTRUCTURE
+      # ----------------------------------------------------
       - name: Checkout infrastructure
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
 
-      - name: Validate image references
+      # ----------------------------------------------------
+      # FIND LATEST SUCCESSFUL BACKEND BUILD
+      # ----------------------------------------------------
+      - name: Find latest successful backend build
         env:
-          BACKEND_SHA: ${{ inputs.backend_sha }}
-          FRONTEND_SHA: ${{ inputs.frontend_sha }}
-          STOCKBOT_SHA: ${{ inputs.stockbot_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          BACKEND_SHA="$(
+            gh run list \
+              --repo jujistu/go-backend-ci-cd \
+              --workflow phase2.yml \
+              --status success \
+              --limit 1 \
+              --json headSha \
+              --jq '.[0].headSha'
+          )"
+
+          if [ -z "$BACKEND_SHA" ]; then
+            echo "No successful backend build found."
+            exit 1
+          fi
+
+          echo "Backend SHA: $BACKEND_SHA"
+          echo "BACKEND_SHA=$BACKEND_SHA" >> "$GITHUB_ENV"
+
+      # ----------------------------------------------------
+      # FIND LATEST SUCCESSFUL FRONTEND BUILD
+      # ----------------------------------------------------
+      - name: Find latest successful frontend build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          FRONTEND_SHA="$(
+            gh run list \
+              --repo jujistu/frontend-ci-cd \
+              --workflow phase2.yml \
+              --status success \
+              --limit 1 \
+              --json headSha \
+              --jq '.[0].headSha'
+          )"
+
+          if [ -z "$FRONTEND_SHA" ]; then
+            echo "No successful frontend build found."
+            exit 1
+          fi
+
+          echo "Frontend SHA: $FRONTEND_SHA"
+          echo "FRONTEND_SHA=$FRONTEND_SHA" >> "$GITHUB_ENV"
+
+      # ----------------------------------------------------
+      # FIND LATEST SUCCESSFUL STOCKBOT BUILD
+      # ----------------------------------------------------
+      - name: Find latest successful stockbot build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          STOCKBOT_SHA="$(
+            gh run list \
+              --repo jujistu/stock-bot \
+              --workflow container.yml \
+              --status success \
+              --limit 1 \
+              --json headSha \
+              --jq '.[0].headSha'
+          )"
+
+          if [ -z "$STOCKBOT_SHA" ]; then
+            echo "No successful stockbot build found."
+            exit 1
+          fi
+
+          echo "Stockbot SHA: $STOCKBOT_SHA"
+          echo "STOCKBOT_SHA=$STOCKBOT_SHA" >> "$GITHUB_ENV"
+
+      # ----------------------------------------------------
+      # SHOW SELECTED PROMOTION
+      # ----------------------------------------------------
+      - name: Show selected promotion
+        run: |
+          echo "========================================"
+          echo "       SELECTED PROMOTION"
+          echo "========================================"
+          echo "Backend:  ${BACKEND_SHA}"
+          echo "Frontend: ${FRONTEND_SHA}"
+          echo "Stockbot:  ${STOCKBOT_SHA}"
+          echo "========================================"
+
+      # ----------------------------------------------------
+      # VALIDATE SHA FORMAT
+      # ----------------------------------------------------
+      - name: Validate image references
         run: |
           set -euo pipefail
 
@@ -59,48 +142,48 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ----------------------------------------------------
+      # VERIFY IMAGES EXIST
+      # ----------------------------------------------------
       - name: Verify images exist in GHCR
-        env:
-          BACKEND_SHA: ${{ inputs.backend_sha }}
-          FRONTEND_SHA: ${{ inputs.frontend_sha }}
-          STOCKBOT_SHA: ${{ inputs.stockbot_sha }}
         run: |
           set -euo pipefail
 
+          echo "Checking backend image..."
           docker manifest inspect \
             "ghcr.io/jujistu/gochatapp:${BACKEND_SHA}" >/dev/null
 
+          echo "Checking frontend image..."
           docker manifest inspect \
             "ghcr.io/jujistu/go-chat-frontend:${FRONTEND_SHA}" >/dev/null
 
+          echo "Checking stockbot image..."
           docker manifest inspect \
             "ghcr.io/jujistu/go-stockbot:${STOCKBOT_SHA}" >/dev/null
 
           echo "All promoted images exist in GHCR."
 
+      # ----------------------------------------------------
+      # UPDATE PROMOTION MANIFEST
+      # ----------------------------------------------------
       - name: Update promotion manifest
-        env:
-          BACKEND_SHA: ${{ inputs.backend_sha }}
-          FRONTEND_SHA: ${{ inputs.frontend_sha }}
-          STOCKBOT_SHA: ${{ inputs.stockbot_sha }}
         run: |
           set -euo pipefail
 
-          cat > images.env <<EOF2
+          cat > images.env <<EOF
           BACKEND_IMAGE=ghcr.io/jujistu/gochatapp:${BACKEND_SHA}
           FRONTEND_IMAGE=ghcr.io/jujistu/go-chat-frontend:${FRONTEND_SHA}
           STOCKBOT_IMAGE=ghcr.io/jujistu/go-stockbot:${STOCKBOT_SHA}
-          EOF2
+          EOF
 
           echo "=== Promotion manifest ==="
           cat images.env
 
+      # ----------------------------------------------------
+      # COMMIT PROMOTION
+      # ----------------------------------------------------
       - name: Commit promotion
-        env:
-          BACKEND_SHA: ${{ inputs.backend_sha }}
-          FRONTEND_SHA: ${{ inputs.frontend_sha }}
-          STOCKBOT_SHA: ${{ inputs.stockbot_sha }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: commit_promotion
         run: |
           set -euo pipefail
 
@@ -111,6 +194,7 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "No promotion changes."
+            echo "promoted=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -119,9 +203,14 @@ jobs:
 
           git push
 
+          echo "promoted=true" >> "$GITHUB_OUTPUT"
           echo "Promotion committed successfully."
 
+      # ----------------------------------------------------
+      # TRIGGER STACK INTEGRATION
+      # ----------------------------------------------------
       - name: Trigger stack integration validation
+        if: steps.commit_promotion.outputs.promoted == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
