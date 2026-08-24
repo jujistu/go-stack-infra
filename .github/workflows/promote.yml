@@ -6,7 +6,7 @@ on:
 permissions:
   contents: write
   packages: read
-  actions: read
+  actions: write
 
 jobs:
   promote:
