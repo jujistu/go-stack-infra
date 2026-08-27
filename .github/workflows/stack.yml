@@ -99,7 +99,15 @@ jobs:
 
           docker compose \
             --env-file images.env \
-            up -d
+            up -d || {
+              echo "=== Compose status ==="
+              docker compose --env-file images.env ps
+
+              echo "=== Compose logs ==="
+              docker compose --env-file images.env logs --no-color
+
+              exit 1
+            }
 
       # ----------------------------------------------------
       # WAIT FOR SERVICES

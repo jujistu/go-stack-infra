@@ -140,8 +140,7 @@ services:
     restart: unless-stopped
 
     depends_on:
-      backend:
-        condition: service_healthy
+      - backend
 
     cap_drop:
       - ALL
