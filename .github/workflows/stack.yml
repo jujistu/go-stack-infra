@@ -67,6 +67,19 @@ jobs:
           echo "Promoted image references are valid."
 
       # ----------------------------------------------------
+      # PREPARE STACK ENVIRONMENT
+      # ----------------------------------------------------
+      - name: Prepare stack environment
+        env:
+          STOCK_API_KEY: ${{ secrets.STOCK_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          test -n "${STOCK_API_KEY}"
+
+          echo "STOCK_API_KEY=${STOCK_API_KEY}" >> images.env
+
+      # ----------------------------------------------------
       # VALIDATE COMPOSE CONFIGURATION
       # ----------------------------------------------------
       - name: Validate Compose configuration
@@ -89,64 +102,27 @@ jobs:
             pull
 
       # ----------------------------------------------------
-      # START STACK
+      # START STACK AND WAIT FOR HEALTH
       # ----------------------------------------------------
       - name: Start stack
-        env:
-          STOCK_API_KEY: ${{ secrets.STOCK_API_KEY }}
         run: |
           set -euo pipefail
 
           docker compose \
             --env-file images.env \
-            up -d || {
-              echo "=== Compose status ==="
-              docker compose --env-file images.env ps
+            up -d \
+            --wait \
+            --wait-timeout 180
 
-              echo "=== Compose logs ==="
-              docker compose --env-file images.env logs --no-color
-
-              exit 1
-            }
-
-      # ----------------------------------------------------
-      # WAIT FOR SERVICES
-      # ----------------------------------------------------
-      - name: Wait for services
-        run: |
-          set -euo pipefail
-
-          timeout 180 bash -c '
-            until \
-              docker inspect --format="{{.State.Health.Status}}" go-chat-mysql 2>/dev/null | grep -q "^healthy$" &&
-              docker inspect --format="{{.State.Health.Status}}" go-chat-rabbitmq 2>/dev/null | grep -q "^healthy$" &&
-              docker inspect --format="{{.State.Health.Status}}" go-chat-backend 2>/dev/null | grep -q "^healthy$" &&
-              docker inspect --format="{{.State.Health.Status}}" go-chat-frontend 2>/dev/null | grep -q "^healthy$" &&
-              docker inspect --format="{{.State.Running}}" go-stockbot 2>/dev/null | grep -q "^true$"
-            do
-              echo "=== Waiting for stack ==="
-
-              docker compose \
-                --env-file images.env \
-                ps
-
-              echo "=== Backend logs ==="
-
-              docker compose \
-                --env-file images.env \
-                logs --tail=20 backend || true
-
-              sleep 3
-            done
-          '
-
-          echo "All stack services are ready."
+          echo "Stack started successfully."
 
       # ----------------------------------------------------
       # SHOW STACK STATUS
       # ----------------------------------------------------
       - name: Show stack status
         run: |
+          set -euo pipefail
+
           docker compose \
             --env-file images.env \
             ps
@@ -158,10 +134,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          curl --fail \
+          curl \
+            --fail \
+            --show-error \
             --retry 10 \
             --retry-delay 3 \
             http://localhost:8080/
+
+          echo "Frontend smoke test passed."
 
       # ----------------------------------------------------
       # AUTHENTICATION SMOKE TEST
@@ -176,17 +156,20 @@ jobs:
           for attempt in {1..10}; do
             echo "Authentication attempt ${attempt}/10"
 
-            if signup_response="$(curl \
-              --silent \
-              --show-error \
-              --fail-with-body \
-              -X POST http://localhost:8080/v1/api/auth/signup \
-              -H 'Content-Type: application/json' \
-              -d "{
-                \"user_name\": \"ci-test-${GITHUB_RUN_ID}\",
-                \"email\": \"${EMAIL}\",
-                \"password\": \"${PASSWORD}\"
-              }")"; then
+            if signup_response="$(
+              curl \
+                --silent \
+                --show-error \
+                --fail-with-body \
+                -X POST \
+                http://localhost:8080/v1/api/auth/signup \
+                -H 'Content-Type: application/json' \
+                -d "{
+                  \"user_name\": \"ci-test-${GITHUB_RUN_ID}\",
+                  \"email\": \"${EMAIL}\",
+                  \"password\": \"${PASSWORD}\"
+                }"
+            )"; then
 
               echo "$signup_response"
 
@@ -203,13 +186,19 @@ jobs:
           echo "Authentication service failed."
 
           echo "=== Compose status ==="
-          docker compose --env-file images.env ps
+          docker compose \
+            --env-file images.env \
+            ps
 
           echo "=== Backend logs ==="
-          docker compose --env-file images.env logs backend
+          docker compose \
+            --env-file images.env \
+            logs --no-color backend
 
           echo "=== Frontend logs ==="
-          docker compose --env-file images.env logs frontend
+          docker compose \
+            --env-file images.env \
+            logs --no-color frontend
 
           exit 1
 
@@ -220,13 +209,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Checking backend container..."
+          echo "Checking backend health endpoint..."
 
-          docker inspect go-chat-backend \
-            --format 'Running={{.State.Running}}'
-
-          test "$(docker inspect go-chat-backend \
-            --format '{{.State.Running}}')" = "true"
+          docker compose \
+            --env-file images.env \
+            exec -T backend \
+            wget -qO- \
+            http://127.0.0.1:9010/health/ready
 
           echo "Backend smoke test passed."
 
@@ -241,11 +230,11 @@ jobs:
 
           docker compose \
             --env-file images.env \
-            logs stockbot
+            logs --no-color stockbot
 
           docker compose \
             --env-file images.env \
-            logs stockbot 2>&1 \
+            logs --no-color stockbot 2>&1 \
             | grep -q "Waiting for messages"
 
           echo "Stockbot RabbitMQ smoke test passed."
@@ -267,16 +256,22 @@ jobs:
             docker inspect "${container}" \
               --format 'User={{.Config.User}} Readonly={{.HostConfig.ReadonlyRootfs}} CapDrop={{json .HostConfig.CapDrop}}'
 
-            test "$(docker inspect "${container}" \
-              --format '{{.Config.User}}')" = "appuser"
+            test "$(
+              docker inspect "${container}" \
+                --format '{{.Config.User}}'
+            )" = "appuser"
 
-            test "$(docker inspect "${container}" \
-              --format '{{.HostConfig.ReadonlyRootfs}}')" = "true"
+            test "$(
+              docker inspect "${container}" \
+                --format '{{.HostConfig.ReadonlyRootfs}}'
+            )" = "true"
 
             docker inspect "${container}" \
               --format '{{json .HostConfig.CapDrop}}' \
               | grep -q 'ALL'
           done
+
+          echo "Container security verification passed."
 
       # ----------------------------------------------------
       # COLLECT LOGS ON FAILURE
@@ -284,9 +279,17 @@ jobs:
       - name: Collect logs on failure
         if: failure()
         run: |
+          echo "=== Compose status ==="
+
           docker compose \
             --env-file images.env \
-            logs --no-color
+            ps || true
+
+          echo "=== Compose logs ==="
+
+          docker compose \
+            --env-file images.env \
+            logs --no-color || true
 
       # ----------------------------------------------------
       # SHUTDOWN
