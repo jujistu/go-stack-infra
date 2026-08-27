@@ -76,7 +76,10 @@ services:
 
     healthcheck:
       test:
-        ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9010/health || exit 1"]
+        [
+          "CMD-SHELL",
+          "wget -q --spider http://127.0.0.1:9010/health/ready || exit 1",
+        ]
       interval: 5s
       timeout: 3s
       retries: 12
