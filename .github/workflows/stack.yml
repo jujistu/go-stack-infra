@@ -102,7 +102,7 @@ jobs:
             pull
 
       # ----------------------------------------------------
-      # START STACK AND WAIT FOR HEALTH
+      # START STACK
       # ----------------------------------------------------
       - name: Start stack
         run: |
@@ -110,11 +110,119 @@ jobs:
 
           docker compose \
             --env-file images.env \
-            up -d \
-            --wait \
-            --wait-timeout 180
+            up -d
 
-          echo "Stack started successfully."
+          echo "Stack containers started."
+
+          docker compose \
+            --env-file images.env \
+            ps
+
+      # ----------------------------------------------------
+      # WAIT FOR SERVICES
+      # ----------------------------------------------------
+      - name: Wait for services
+        run: |
+          set -euo pipefail
+
+          for attempt in {1..60}; do
+            echo "=== Readiness check ${attempt}/60 ==="
+
+            MYSQL_STATUS="$(docker inspect \
+              --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' \
+              go-chat-mysql 2>/dev/null || true)"
+
+            RABBITMQ_STATUS="$(docker inspect \
+              --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' \
+              go-chat-rabbitmq 2>/dev/null || true)"
+
+            BACKEND_STATUS="$(docker inspect \
+              --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' \
+              go-chat-backend 2>/dev/null || true)"
+
+            FRONTEND_STATUS="$(docker inspect \
+              --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' \
+              go-chat-frontend 2>/dev/null || true)"
+
+            STOCKBOT_RUNNING="$(docker inspect \
+              --format='{{.State.Running}}' \
+              go-stockbot 2>/dev/null || true)"
+
+            echo "MySQL:    ${MYSQL_STATUS}"
+            echo "RabbitMQ: ${RABBITMQ_STATUS}"
+            echo "Backend:  ${BACKEND_STATUS}"
+            echo "Frontend: ${FRONTEND_STATUS}"
+            echo "Stockbot: ${STOCKBOT_RUNNING}"
+
+            if [ "${MYSQL_STATUS}" = "healthy" ] &&
+               [ "${RABBITMQ_STATUS}" = "healthy" ] &&
+               [ "${BACKEND_STATUS}" = "healthy" ] &&
+               [ "${FRONTEND_STATUS}" = "healthy" ] &&
+               [ "${STOCKBOT_RUNNING}" = "true" ]; then
+
+              echo "All stack services are ready."
+              exit 0
+            fi
+
+            if [ "${BACKEND_STATUS}" = "unhealthy" ]; then
+              echo "=== Backend is unhealthy ==="
+
+              echo "=== Backend health check logs ==="
+              docker inspect go-chat-backend \
+                --format='{{range .State.Health.Log}}{{println .Start "|" .ExitCode "|" .Output}}{{end}}' \
+                || true
+
+              echo "=== Backend application logs ==="
+              docker compose \
+                --env-file images.env \
+                logs --no-color --tail=100 backend || true
+            fi
+
+            if [ "${FRONTEND_STATUS}" = "unhealthy" ]; then
+              echo "=== Frontend is unhealthy ==="
+
+              echo "=== Frontend health check logs ==="
+              docker inspect go-chat-frontend \
+                --format='{{range .State.Health.Log}}{{println .Start "|" .ExitCode "|" .Output}}{{end}}' \
+                || true
+
+              echo "=== Frontend application logs ==="
+              docker compose \
+                --env-file images.env \
+                logs --no-color --tail=100 frontend || true
+            fi
+
+            echo "=== Compose status ==="
+            docker compose \
+              --env-file images.env \
+              ps
+
+            sleep 3
+          done
+
+          echo "Stack did not become ready within 180 seconds."
+
+          echo "=== Final Compose status ==="
+          docker compose \
+            --env-file images.env \
+            ps || true
+
+          echo "=== Backend health check logs ==="
+          docker inspect go-chat-backend \
+            --format='{{range .State.Health.Log}}{{println .Start "|" .ExitCode "|" .Output}}{{end}}' \
+            || true
+
+          echo "=== Frontend health check logs ==="
+          docker inspect go-chat-frontend \
+            --format='{{range .State.Health.Log}}{{println .Start "|" .ExitCode "|" .Output}}{{end}}' \
+            || true
+
+          echo "=== All Compose logs ==="
+          docker compose \
+            --env-file images.env \
+            logs --no-color || true
+
+          exit 1
 
       # ----------------------------------------------------
       # SHOW STACK STATUS
@@ -284,6 +392,18 @@ jobs:
           docker compose \
             --env-file images.env \
             ps || true
+
+          echo "=== Backend health status ==="
+
+          docker inspect go-chat-backend \
+            --format='{{json .State.Health}}' \
+            2>/dev/null || true
+
+          echo "=== Frontend health status ==="
+
+          docker inspect go-chat-frontend \
+            --format='{{json .State.Health}}' \
+            2>/dev/null || true
 
           echo "=== Compose logs ==="
 
