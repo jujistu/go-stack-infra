@@ -74,6 +74,14 @@ services:
       STKBT_RECEIVER_QUEUE: stockbot-publisher
       STKBT_PUBLISHER_QUEUE: stockbot-receiver
 
+    healthcheck:
+      test:
+        ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9010/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
     cap_drop:
       - ALL
 
@@ -129,7 +137,8 @@ services:
     restart: unless-stopped
 
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
     cap_drop:
       - ALL

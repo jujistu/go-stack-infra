@@ -108,17 +108,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          timeout 120 bash -c '
+          timeout 180 bash -c '
             until \
               docker inspect --format="{{.State.Health.Status}}" go-chat-mysql 2>/dev/null | grep -q "^healthy$" &&
               docker inspect --format="{{.State.Health.Status}}" go-chat-rabbitmq 2>/dev/null | grep -q "^healthy$" &&
+              docker inspect --format="{{.State.Health.Status}}" go-chat-backend 2>/dev/null | grep -q "^healthy$" &&
               docker inspect --format="{{.State.Health.Status}}" go-chat-frontend 2>/dev/null | grep -q "^healthy$" &&
-              docker inspect --format="{{.State.Running}}" go-chat-backend 2>/dev/null | grep -q "^true$" &&
               docker inspect --format="{{.State.Running}}" go-stockbot 2>/dev/null | grep -q "^true$"
             do
+              echo "=== Waiting for stack ==="
+
               docker compose \
                 --env-file images.env \
                 ps
+
+              echo "=== Backend logs ==="
+
+              docker compose \
+                --env-file images.env \
+                logs --tail=20 backend || true
 
               sleep 3
             done
@@ -157,10 +165,13 @@ jobs:
           EMAIL="ci-test-${GITHUB_RUN_ID}@example.com"
           PASSWORD="CiTest123!"
 
-          for attempt in {1..30}; do
-            echo "Authentication attempt ${attempt}/30"
+          for attempt in {1..10}; do
+            echo "Authentication attempt ${attempt}/10"
 
-            if signup_response="$(curl --silent --show-error --fail-with-body \
+            if signup_response="$(curl \
+              --silent \
+              --show-error \
+              --fail-with-body \
               -X POST http://localhost:8080/v1/api/auth/signup \
               -H 'Content-Type: application/json' \
               -d "{
@@ -170,19 +181,28 @@ jobs:
               }")"; then
 
               echo "$signup_response"
+
               echo "$signup_response" | grep -q '"Token"'
 
               echo "Authentication smoke test passed."
               exit 0
             fi
 
-            echo "Backend not ready yet."
-            docker compose --env-file images.env ps
+            echo "Authentication endpoint not ready yet."
             sleep 2
           done
 
-          echo "Authentication service failed to become ready."
+          echo "Authentication service failed."
+
+          echo "=== Compose status ==="
+          docker compose --env-file images.env ps
+
+          echo "=== Backend logs ==="
           docker compose --env-file images.env logs backend
+
+          echo "=== Frontend logs ==="
+          docker compose --env-file images.env logs frontend
+
           exit 1
 
       # ----------------------------------------------------
