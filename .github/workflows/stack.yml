@@ -102,7 +102,7 @@ jobs:
             pull
 
       # ----------------------------------------------------
-      # START DEPENDENCIES FIRST
+      # START DEPENDENCIES
       # ----------------------------------------------------
       - name: Start dependencies
         run: |
@@ -154,67 +154,136 @@ jobs:
               exit 0
             fi
 
-            if [ "${attempt}" -eq 60 ]; then
-              echo "Dependencies did not become healthy within 120 seconds."
-
-              echo "=== Compose status ==="
-              docker compose \
-                --env-file images.env \
-                ps || true
-
-              echo "=== MySQL logs ==="
-              docker compose \
-                --env-file images.env \
-                logs --no-color mysql || true
-
-              echo "=== RabbitMQ logs ==="
-              docker compose \
-                --env-file images.env \
-                logs --no-color rabbitmq || true
-
-              exit 1
-            fi
-
             sleep 2
           done
 
+          echo "Dependencies did not become healthy within 120 seconds."
+
+          echo "=== Compose status ==="
+          docker compose \
+            --env-file images.env \
+            ps || true
+
+          echo "=== MySQL logs ==="
+          docker compose \
+            --env-file images.env \
+            logs --no-color mysql || true
+
+          echo "=== RabbitMQ logs ==="
+          docker compose \
+            --env-file images.env \
+            logs --no-color rabbitmq || true
+
+          exit 1
+
       # ----------------------------------------------------
-      # START APPLICATION SERVICES
+      # START BACKEND
       # ----------------------------------------------------
-      - name: Start application services
+      - name: Start backend
         run: |
           set -euo pipefail
 
-          echo "Starting backend, frontend and Stockbot..."
+          echo "Starting backend..."
 
           docker compose \
             --env-file images.env \
             up -d \
-            backend \
-            frontend \
-            stockbot
+            backend
 
-          echo "Application containers started."
+          echo "Backend container started."
 
           docker compose \
             --env-file images.env \
             ps
 
       # ----------------------------------------------------
-      # WAIT FOR APPLICATION SERVICES
+      # WAIT FOR BACKEND
       # ----------------------------------------------------
-      - name: Wait for application services
+      - name: Wait for backend
         run: |
           set -euo pipefail
 
           for attempt in {1..60}; do
-            echo "=== Application readiness check ${attempt}/60 ==="
+            echo "=== Backend readiness check ${attempt}/60 ==="
 
             BACKEND_STATUS="$(
               docker inspect \
                 --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' \
                 go-chat-backend 2>/dev/null || true
             )"
+
+            echo "Backend: ${BACKEND_STATUS}"
+
+            if [ "${BACKEND_STATUS}" = "healthy" ]; then
+              echo "Backend is healthy."
+              exit 0
+            fi
+
+            if [ "${BACKEND_STATUS}" = "unhealthy" ]; then
+              echo "=== Backend health check logs ==="
+
+              docker inspect \
+                go-chat-backend \
+                --format='{{range .State.Health.Log}}{{println .Start "|" .ExitCode "|" .Output}}{{end}}' \
+                2>/dev/null || true
+
+              echo "=== Backend application logs ==="
+
+              docker compose \
+                --env-file images.env \
+                logs --no-color --tail=100 backend || true
+            fi
+
+            sleep 3
+          done
+
+          echo "Backend did not become healthy within 180 seconds."
+
+          echo "=== Final backend health status ==="
+
+          docker inspect \
+            go-chat-backend \
+            --format='{{json .State.Health}}' \
+            2>/dev/null || true
+
+          echo "=== Backend logs ==="
+
+          docker compose \
+            --env-file images.env \
+            logs --no-color backend || true
+
+          exit 1
+
+      # ----------------------------------------------------
+      # START FRONTEND AND STOCKBOT
+      # ----------------------------------------------------
+      - name: Start frontend and Stockbot
+        run: |
+          set -euo pipefail
+
+          echo "Starting frontend and Stockbot..."
+
+          docker compose \
+            --env-file images.env \
+            up -d \
+            frontend \
+            stockbot
+
+          echo "Frontend and Stockbot containers started."
+
+          docker compose \
+            --env-file images.env \
+            ps
+
+      # ----------------------------------------------------
+      # WAIT FOR FRONTEND AND STOCKBOT
+      # ----------------------------------------------------
+      - name: Wait for frontend and Stockbot
+        run: |
+          set -euo pipefail
+
+          for attempt in {1..60}; do
+            echo "=== Application readiness check ${attempt}/60 ==="
 
             FRONTEND_STATUS="$(
               docker inspect \
@@ -228,45 +297,37 @@ jobs:
                 go-stockbot 2>/dev/null || true
             )"
 
-            echo "Backend:  ${BACKEND_STATUS}"
             echo "Frontend: ${FRONTEND_STATUS}"
             echo "Stockbot: ${STOCKBOT_RUNNING}"
 
-            if [ "${BACKEND_STATUS}" = "healthy" ] &&
-               [ "${FRONTEND_STATUS}" = "healthy" ] &&
+            if [ "${FRONTEND_STATUS}" = "healthy" ] &&
                [ "${STOCKBOT_RUNNING}" = "true" ]; then
 
-              echo "All application services are ready."
+              echo "Frontend and Stockbot are ready."
               exit 0
             fi
 
-            if [ "${BACKEND_STATUS}" = "unhealthy" ] ||
-               [ "${BACKEND_STATUS}" = "" ]; then
-
-              echo "=== Backend status ==="
-
-              docker inspect \
-                go-chat-backend \
-                --format='{{range .State.Health.Log}}{{println .Start "|" .ExitCode "|" .Output}}{{end}}' \
-                2>/dev/null || true
-
-              docker compose \
-                --env-file images.env \
-                logs --no-color --tail=100 backend || true
-            fi
-
             if [ "${FRONTEND_STATUS}" = "unhealthy" ]; then
-
-              echo "=== Frontend status ==="
+              echo "=== Frontend health check logs ==="
 
               docker inspect \
                 go-chat-frontend \
                 --format='{{range .State.Health.Log}}{{println .Start "|" .ExitCode "|" .Output}}{{end}}' \
                 2>/dev/null || true
 
+              echo "=== Frontend application logs ==="
+
               docker compose \
                 --env-file images.env \
                 logs --no-color --tail=100 frontend || true
+            fi
+
+            if [ "${STOCKBOT_RUNNING}" != "true" ]; then
+              echo "=== Stockbot logs ==="
+
+              docker compose \
+                --env-file images.env \
+                logs --no-color --tail=100 stockbot || true
             fi
 
             echo "=== Compose status ==="
@@ -275,26 +336,24 @@ jobs:
               --env-file images.env \
               ps
 
-            if [ "${attempt}" -eq 60 ]; then
-              echo "Application services did not become ready within 180 seconds."
-
-              echo "=== Final Compose status ==="
-
-              docker compose \
-                --env-file images.env \
-                ps || true
-
-              echo "=== All Compose logs ==="
-
-              docker compose \
-                --env-file images.env \
-                logs --no-color || true
-
-              exit 1
-            fi
-
             sleep 3
           done
+
+          echo "Frontend and Stockbot did not become ready within 180 seconds."
+
+          echo "=== Final Compose status ==="
+
+          docker compose \
+            --env-file images.env \
+            ps || true
+
+          echo "=== All Compose logs ==="
+
+          docker compose \
+            --env-file images.env \
+            logs --no-color || true
+
+          exit 1
 
       # ----------------------------------------------------
       # SHOW STACK STATUS
@@ -356,31 +415,33 @@ jobs:
               echo "$signup_response" | grep -q '"Token"'
 
               echo "Authentication smoke test passed."
-              exit 0
+              break
+            fi
+
+            if [ "${attempt}" -eq 10 ]; then
+              echo "Authentication service failed."
+
+              echo "=== Compose status ==="
+              docker compose \
+                --env-file images.env \
+                ps
+
+              echo "=== Backend logs ==="
+              docker compose \
+                --env-file images.env \
+                logs --no-color backend || true
+
+              echo "=== Frontend logs ==="
+              docker compose \
+                --env-file images.env \
+                logs --no-color frontend || true
+
+              exit 1
             fi
 
             echo "Authentication endpoint not ready yet."
             sleep 2
           done
-
-          echo "Authentication service failed."
-
-          echo "=== Compose status ==="
-          docker compose \
-            --env-file images.env \
-            ps
-
-          echo "=== Backend logs ==="
-          docker compose \
-            --env-file images.env \
-            logs --no-color backend
-
-          echo "=== Frontend logs ==="
-          docker compose \
-            --env-file images.env \
-            logs --no-color frontend
-
-          exit 1
 
       # ----------------------------------------------------
       # BACKEND SMOKE TEST
